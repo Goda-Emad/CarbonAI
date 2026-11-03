@@ -98,7 +98,9 @@ def factor_audit(factor_id: str | None = None, con=Depends(get_con), user: Auth 
 
 
 @router.post("", status_code=201)
-def add_factor(body: FactorIn, con=Depends(get_con), user: Auth = Depends(require("admin", "head_office"))):
+def add_factor(body: FactorIn, con=Depends(get_con), user: Auth = Depends(require("admin"))):
+    """Admin-only: factor library management is restricted to authorised administrators on the
+    backend (menu hiding is not security). Factory users consume factors via calculations only."""
     try:
         ver = FL.add_factor(con, factor_id=body.factor_id.strip(), country_code=body.country_code.strip().upper(),
                             factor_class=body.factor_class, category=body.category, activity=body.activity,
@@ -137,3 +139,74 @@ def gwp_sets(user: Auth = Depends(require("admin", "head_office", "factory_manag
     return [{"set_id": s.set_id, "horizon_years": s.horizon_years,
              "values": {k: str(v) for k, v in s.values.items()}, "source": s.source, "note": s.note}
             for s in REGISTRY.values()]
+
+
+# ---------------- Egypt factor database: rich filtering, coverage, export ----------------
+
+@router.get("/egypt")
+def egypt_factors(country: str = "EG", year: int | None = None, sector: str | None = None,
+                  activity: str | None = None, gas: str | None = None,
+                  country_scope: str | None = None, status: str | None = None,
+                  q: str | None = None, con=Depends(get_con),
+                  user: Auth = Depends(require("admin", "head_office", "factory_manager", "viewer"))):
+    sql = ("SELECT factor_id, version, country_code, sector, activity_category, activity, fuel_type, "
+           "technology, gas, co2e_factor_value, activity_unit, year_from, year_to, country_scope, "
+           "verification_status, source_organization, source_document, source_url, source_page, "
+           "source_locator, data_year, quality_level, uncertainty, methodology, boundary_note "
+           "FROM emission_factors WHERE 1=1")
+    p: list = []
+    if country and country != "ALL":
+        # Egypt view includes GLOBAL international defaults (labelled by country_scope)
+        sql += " AND country_code IN (?, 'GLOBAL')"; p.append(country)
+    for col, val in (("sector", sector), ("activity", activity), ("gas", gas),
+                     ("country_scope", country_scope), ("verification_status", status)):
+        if val:
+            sql += f" AND {col}=?"; p.append(val)
+    if year:
+        sql += " AND year_from<=? AND year_to>=?"; p += [year, year]
+    if q:
+        sql += " AND (factor_id LIKE ? OR activity LIKE ? OR source_organization LIKE ?)"
+        p += [f"%{q}%"] * 3
+    return rows_list(con.execute(sql + " ORDER BY country_scope, sector, activity, data_year", p).fetchall())
+
+
+@router.get("/coverage-matrix")
+def coverage_matrix(year: int | None = None, status: str | None = None,
+                    activity: str | None = None, con=Depends(get_con),
+                    user: Auth = Depends(require("admin", "head_office", "factory_manager", "viewer"))):
+    sql = "SELECT * FROM factor_coverage WHERE country_code='EG'"
+    p: list = []
+    if year:
+        sql += " AND year=?"; p.append(year)
+    if status:
+        sql += " AND coverage_status=?"; p.append(status)
+    if activity:
+        sql += " AND activity=?"; p.append(activity)
+    rows = rows_list(con.execute(sql + " ORDER BY year, sector, activity", p).fetchall())
+    summary = {}
+    for r in con.execute("SELECT year, coverage_status, COUNT(*) n FROM factor_coverage "
+                         "WHERE country_code='EG' GROUP BY year, coverage_status").fetchall():
+        summary.setdefault(int(r["year"]), {})[r["coverage_status"]] = int(r["n"])
+    return {"rows": rows, "summary": [{"year": y, "statuses": summary.get(y, {})}
+                                      for y in range(2006, 2027)]}
+
+
+@router.get("/export.csv")
+def export_factors(country: str = "EG", con=Depends(get_con),
+                   user: Auth = Depends(require("admin", "head_office"))):
+    from fastapi.responses import Response
+    rows = con.execute(
+        "SELECT factor_id, version, country_code, sector, activity_category, activity, fuel_type, "
+        "technology, gas, co2e_factor_value, activity_unit, year_from, year_to, country_scope, "
+        "verification_status, source_organization, source_document, source_url, data_year "
+        "FROM emission_factors WHERE (?='ALL' OR country_code=?) ORDER BY country_code, activity",
+        (country, country)).fetchall()
+    import csv as _csv, io as _io
+    buf = _io.StringIO()
+    w = _csv.DictWriter(buf, fieldnames=list(rows[0].keys()) if rows else ["factor_id"])
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: r[k] for k in w.fieldnames})
+    data = buf.getvalue().encode("utf-8-sig")
+    return Response(content=data, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="carbonai_factors_{country}.csv"'})

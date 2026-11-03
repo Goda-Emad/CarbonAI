@@ -17,8 +17,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.config import CORS_ORIGINS, FRONTEND_DIST
-from api.routers import (auth, dashboard, factors, imports, ml, org, plans, records, reports,
-                         settings, submissions, users)
+from api.routers import (auth, cooling, dashboard, factors, imports, invoices, ml, org, plans,
+                         records, references, reports, settings, submissions, users)
 from db.connection import connect
 from db.schema import init_db
 from db.seed import seed_all
@@ -70,6 +70,9 @@ async def value_error_handler(_req: Request, exc: ValueError):
 
 @app.exception_handler(LookupError)
 async def lookup_error_handler(_req: Request, exc: LookupError):
+    # KeyError is a programming bug, not a missing resource - never mask it as 404.
+    if isinstance(exc, KeyError):
+        return JSONResponse(status_code=500, content={"detail": f"internal error: missing key {exc}"})
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
@@ -89,8 +92,9 @@ def health():
 
 
 for r in (auth.router, users.router, org.router, records.router, factors.router,
-          dashboard.router, reports.router, imports.router, submissions.router,
-          ml.router, settings.router, plans.router):
+          dashboard.router, reports.router, imports.router, invoices.router,
+          submissions.router, ml.router, settings.router, plans.router,
+          references.router, cooling.router):
     app.include_router(r)
 
 # ---- built React frontend (production) ----

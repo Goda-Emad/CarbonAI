@@ -23,13 +23,16 @@ Double-click **`START_CARBONAI.bat`**, then open http://127.0.0.1:8000
 |---|---|
 | Calculation engine | Deterministic Decimal engine (activity × factor), dimension-checked unit conversion, GWP sets (AR4/AR5), per-gas component math — unchanged from the original core |
 | Factor library | Versioned emission factors with sources, ranked suggestion (national > regional > global > proxy), verification workflow with audit log; only verified national factors auto-apply |
+| Egypt factors | Source-backed Egyptian database: EEHC 2023/2024 official figure (380.3 t CO₂/GWh thermal) + IPCC 2006/AR5 defaults, four-way classification, 2006–2026 coverage matrix (explicit pending years), admin-only management |
 | Scope classification | Rule-based GHG Protocol Scope 1/2/3 suggestion that states its missing information instead of guessing |
 | Multi-factory | Organizations (companies) with branches/factories; factory users are isolated to their own facility |
-| Reporting workflow | Factories snapshot a period into a submission; head office approves/rejects; one active submission per facility/period (partial unique index); consolidated report counts approved snapshots only |
-| Dashboard | Totals, monthly trend, scopes, facility comparison, categories, top sources — same numbers as the CSV/PDF reports |
-| Reports | CSV (activity detail + monthly summary) and PDF (English + Arabic with proper shaping) |
-| Import | CSV/Excel with preview → explicit commit; rejected rows listed with reasons; duplicates reported |
-| ML | Optional sklearn model trained on the org's own ledger (see below) |
+| Reporting workflow | Factories snapshot a period into a submission; head office approves/rejects; one active submission per facility/period; consolidated report counts approved snapshots only |
+| Dashboard | Total + Scope 1/2/3 KPI cards with share % and previous-period change, monthly/annual trends, facility/category comparisons, top sources |
+| Intelligent import | Arabic/English synonym recognition + fuzzy matching + mapping UI, per-row factor preview, SHA-256 duplicate-file protection |
+| Invoices & documents | Manual entry + validated upload, PDF text extraction (candidates for review), engine-based calculation, searchable archive, duplicate prevention, void-with-audit |
+| Reports | CSV, PDF (EN/AR), detailed management PDF with embedded charts, annual reports with multi-year comparison |
+| Reduction plans | Data-driven insights from actual emissions, referenced suggestions, targets and a multi-year actual-vs-target roadmap |
+| ML | Row-level estimator + monthly/annual forecasting lifecycle (dataset fingerprint, chronological evaluation vs baseline, staged→admin-activated versions); no model ships until trained on real data |
 
 ## Roles
 

@@ -35,9 +35,12 @@ def seed_categories(con) -> int:
     return n
 
 
-def seed_sources(con) -> int:
+def seed_sources(con, *, include_legacy_nz: bool = False) -> int:
     """Register the listed references. All start 'unverified' with last_checked_at NULL:
-    this build had no network, so reachability was never checked."""
+    this build had no network, so reachability was never checked.
+
+    The legacy NZ source is only registered for explicit legacy-test seeding; production
+    installs never insert it (client-authorised NZ removal, 2026-11-03)."""
     doc = json.loads((SEED_DIR / "reference_sources.json").read_text("utf-8"))
     n = 0
     with transaction(con):
@@ -49,13 +52,14 @@ def seed_sources(con) -> int:
                 " VALUES (?,?,?,?,?,?,NULL,'unverified')",
                 (rid, s["title"].split(" ")[0], s["title"], s.get("url"), s.get("scope"),
                  "Not reviewed. " + str(s.get("reachability", "")))).rowcount
-        nz = json.loads((SEED_DIR / "nz_mfe_2023_factors.json").read_text("utf-8"))["source"]
-        n += con.execute(
-            "INSERT OR IGNORE INTO sources(reference_id,organization_name,organization_type,document_title,"
-            "publication_year,publication_date,source_url,methodology_description,geographic_scope,"
-            "license_or_usage_notes,verification_status) VALUES (?,?,?,?,?,?,?,?,?,?,'unverified')",
-            (NZ_REF_ID, nz["org"], "government", nz["title"], 2023, nz["published"], nz["direct_url"],
-             "Published national factors; GWP basis: " + nz["gwp_basis"], "NZ", nz["licence_note"])).rowcount
+        if include_legacy_nz:
+            nz = json.loads((Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "nz_mfe_2023_factors.json").read_text("utf-8"))["source"]
+            n += con.execute(
+                "INSERT OR IGNORE INTO sources(reference_id,organization_name,organization_type,document_title,"
+                "publication_year,publication_date,source_url,methodology_description,geographic_scope,"
+                "license_or_usage_notes,verification_status) VALUES (?,?,?,?,?,?,?,?,?,?,'unverified')",
+                (NZ_REF_ID, nz["org"], "government", nz["title"], 2023, nz["published"], nz["direct_url"],
+                 "Published national factors; GWP basis: " + nz["gwp_basis"], "NZ", nz["licence_note"])).rowcount
     return n
 
 
@@ -100,10 +104,25 @@ def seed_nz_factors(con) -> int:
     return n
 
 
-def seed_all(con) -> dict:
-    return {"countries": seed_countries(con), "categories": seed_categories(con),
-            "sources": seed_sources(con), "nz_factors": seed_nz_factors(con),
-            "auth": seed_auth(con)}
+def seed_all(con, *, include_legacy_nz: bool = False) -> dict:
+    """Fresh installs seed the Egyptian dataset. New Zealand is legacy-only: it is loaded
+    solely when a test fixture explicitly asks for it (include_legacy_nz=True) and is never
+    part of a production seed. Existing NZ rows are removed by scripts/nz_removal_dry_run.py
+    after backup + dry-run + explicit confirmation (see the implementation report)."""
+    out = {"countries": seed_countries(con), "categories": seed_categories(con),
+           "sources": seed_sources(con, include_legacy_nz=include_legacy_nz)}
+    if include_legacy_nz:
+        out["nz_factors"] = seed_nz_factors(con)
+    else:
+        from services.cooling import seed_reference_library, seed_refrigerants
+        from services.egypt_seed import seed_egypt
+        out["egypt"] = seed_egypt(con)
+        out["reference_library"] = seed_reference_library(con)
+        out["refrigerants"] = seed_refrigerants(con)
+    out["auth"] = seed_auth(con)
+    with transaction(con):
+        con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('default_country','EG')")
+    return out
 
 
 def seed_auth(con) -> dict:

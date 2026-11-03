@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, errMsg } from '../api/client'
+import { api, download, errMsg } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
-import { Button, Card, DataTable, Input, Modal, Select, StatusBadge, Textarea } from '../components/ui'
+import { Badge, Button, Card, DataTable, Input, Modal, Select, StatusBadge, Textarea } from '../components/ui'
 import { useI18n } from '../i18n'
 
 const EMPTY = {
@@ -11,13 +11,24 @@ const EMPTY = {
   reason: '', boundary_note: '', methodology: '',
 }
 
+const CLASS_LABEL: Record<string, [string, 'green' | 'blue' | 'amber' | 'gray']> = {
+  egypt_official: ['Egypt official', 'green'],
+  egypt_research: ['Egypt research', 'blue'],
+  international_egypt_specific: ['Intl Egypt-specific', 'amber'],
+  international_default: ['Intl default', 'gray'],
+}
+
 export default function Factors() {
   const { t, lang } = useI18n()
   const { user } = useAuth()
-  const canAdmin = user?.role === 'admin' || user?.role === 'head_office'
-  const [tab, setTab] = useState<'lib' | 'cov' | 'src' | 'add' | 'audit'>('lib')
+  const isAdmin = user?.role === 'admin'
+  const [tab, setTab] = useState<'lib' | 'cov' | 'src' | 'eg' | 'add' | 'audit'>('lib')
   const [rows, setRows] = useState<any[]>([])
   const [cov, setCov] = useState<any[]>([])
+  const [covYears, setCovYears] = useState<any[]>([])
+  const [covYear, setCovYear] = useState('2024')
+  const [covRows, setCovRows] = useState<any[]>([])
+  const [egRows, setEgRows] = useState<any[]>([])
   const [srcs, setSrcs] = useState<any[]>([])
   const [audit, setAudit] = useState<any[]>([])
   const [meta, setMeta] = useState<any>(null)
@@ -39,11 +50,15 @@ export default function Factors() {
     api.get('/factors/coverage').then((r) => setCov(r.data))
     api.get('/factors/sources').then((r) => setSrcs(r.data))
     api.get('/records/meta').then((r) => setMeta(r.data))
-    api.get('/factors/gwp-sets').then((r) => setMeta((m: any) => ({ ...m, gwp: r.data })))
+    api.get('/factors/egypt').then((r) => setEgRows(r.data))
   }, [])
   useEffect(() => {
-    if (tab === 'audit' && canAdmin) api.get('/factors/audit').then((r) => setAudit(r.data))
-  }, [tab, canAdmin])
+    if (tab === 'cov') api.get('/factors/coverage-matrix', { params: { year: covYear } })
+      .then((r) => { setCovYears(r.data.summary); setCovRows(r.data.rows) })
+  }, [tab, covYear])
+  useEffect(() => {
+    if (tab === 'audit' && isAdmin) api.get('/factors/audit').then((r) => setAudit(r.data))
+  }, [tab, isAdmin])
 
   const add = async () => {
     setMsg('')
@@ -52,7 +67,6 @@ export default function Factors() {
       setForm({ ...EMPTY }); setTab('lib'); load()
     } catch (e) { setMsg(errMsg(e)) }
   }
-
   const doVerify = async () => {
     if (!verify) return
     setMsg('')
@@ -62,12 +76,22 @@ export default function Factors() {
     } catch (e) { setMsg(errMsg(e)) }
   }
 
-  const tabs: [typeof tab, string][] = [['lib', t('factors')], ['cov', t('countryCoverage')], ['src', t('registeredSources')],
-    ...(canAdmin ? [['add', t('addFactor')], ['audit', t('auditLog')]] as [typeof tab, string][] : [])]
+  const tabs: [typeof tab, string][] = [
+    ['lib', t('factors')], ['cov', t('countryCoverage')], ['src', t('registeredSources')],
+    ['eg', t('egyptFactors')],
+    ...(isAdmin ? [['add', t('addFactor')], ['audit', t('auditLog')]] as [typeof tab, string][] : []),
+  ]
+  const year2025 = covYears.find((x: any) => x.year === 2025)
+  const year2026 = covYears.find((x: any) => x.year === 2026)
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-bold text-slate-800">{t('factorLibrary')}</h1>
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="me-auto text-xl font-bold text-slate-800">{t('factorLibrary')}</h1>
+        <Button variant="outline" onClick={() => download('/factors/export.csv?country=EG', 'carbonai_factors_EG.csv')}>
+          ⬇ {t('exportCsv')}
+        </Button>
+      </div>
       {msg && <div className="rounded-lg bg-rose-50 px-4 py-2 text-sm text-rose-700">{msg}</div>}
 
       <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white p-1">
@@ -97,28 +121,62 @@ export default function Factors() {
               { key: 'activity', label: t('activityName') },
               { key: 'country_code', label: t('country') },
               { key: 'co2e_factor_value', label: t('factorValue'), render: (r) => `${r.co2e_factor_value} kg/${r.activity_unit}` },
-              { key: 'factor_class', label: t('factorClass') },
+              { key: 'country_scope', label: t('classification'), render: (r) => {
+                const [label, tone] = CLASS_LABEL[r.country_scope] ?? ['—', 'gray']
+                return <Badge tone={tone}>{label}</Badge>
+              } },
               { key: 'verification_status', label: t('factorVerification'), render: (r) => <StatusBadge status={r.verification_status} /> },
               { key: 'source_organization', label: t('factorSource') },
-              ...(user?.role === 'admin' ? [{ key: 'verify', label: t('actions'), render: (r: any) => (
-                <Button variant="outline" className="!px-2 !py-1 text-xs" onClick={() => setVerify({ id: r.factor_id, ver: r.version, status: r.verification_status === 'verified' ? 'pending_review' : 'verified', reason: '' })}>
-                  {r.verification_status === 'verified' ? '↩' : '✓'}
-                </Button>
-              ) } as any] : []),
+              ...(isAdmin ? [{
+                key: 'verify', label: t('actions'), render: (r: any) => (
+                  <Button variant="outline" className="!px-2 !py-1 text-xs"
+                    onClick={() => setVerify({ id: r.factor_id, ver: r.version, status: r.verification_status === 'verified' ? 'pending_review' : 'verified', reason: '' })}>
+                    {r.verification_status === 'verified' ? '↩' : '✓'}
+                  </Button>
+                ),
+              } as any] : []),
             ]}
           />
         </>
       )}
 
       {tab === 'cov' && (
-        <Card title={t('countryCoverage')}>
-          <DataTable rows={cov} pageSize={20} columns={[
-            { key: 'iso2_code', label: 'ISO' },
-            { key: lang === 'ar' ? 'country_name_ar' : 'country_name_en', label: t('country') },
-            { key: 'n_factors', label: t('nFactors'), sortable: true },
-            { key: 'n_verified', label: t('nVerified'), sortable: true },
-          ]} />
-        </Card>
+        <>
+          <Card title={`${t('coverageMatrix')} — 2025/2026 assessment`}>
+            <div className="mb-3 flex flex-wrap gap-2 text-xs">
+              <Badge tone="green">{t('coverageAvailable')}: {year2025?.statuses?.available ?? 0}</Badge>
+              <Badge tone="gray">{t('coverageIntlDefault')}: {year2025?.statuses?.international_default ?? 0}</Badge>
+              <Badge tone="amber">{t('coveragePending')}: {year2025?.statuses?.pending ?? 0}</Badge>
+              <span className="mx-2">|</span>
+              <b>2026:</b>
+              <Badge tone="green">{t('coverageAvailable')}: {year2026?.statuses?.available ?? 0}</Badge>
+              <Badge tone="gray">{t('coverageIntlDefault')}: {year2026?.statuses?.international_default ?? 0}</Badge>
+              <Badge tone="amber">{t('coveragePending')}: {year2026?.statuses?.pending ?? 0}</Badge>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <Select label={t('year')} value={covYear} onChange={setCovYear} className="w-28"
+                options={Array.from({ length: 21 }, (_, i) => String(2026 - i)).map((y) => ({ value: y, label: y }))} />
+            </div>
+            <div className="mt-3">
+              <DataTable rows={covRows} pageSize={12} columns={[
+                { key: 'year', label: t('year') },
+                { key: 'sector', label: t('sector') },
+                { key: 'activity', label: t('activityName') },
+                { key: 'coverage_status', label: t('status'), render: (r) => {
+                  const map: Record<string, [string, any]> = {
+                    available: [t('coverageAvailable'), 'green'], international_default: [t('coverageIntlDefault'), 'gray'],
+                    pending: [t('coveragePending'), 'amber'], unavailable: [t('coverageUnavailable'), 'red'],
+                    provisional: [t('coverageProvisional'), 'blue'], estimated: [t('coverageEstimated'), 'blue'],
+                    not_applicable: [t('coverageNA'), 'gray'],
+                  }
+                  const [label, tone] = map[r.coverage_status] ?? [r.coverage_status, 'gray']
+                  return <Badge tone={tone}>{label}</Badge>
+                } },
+                { key: 'missing_reason', label: t('missingReason') ?? 'missing reason' },
+              ]} />
+            </div>
+          </Card>
+        </>
       )}
 
       {tab === 'src' && (
@@ -132,7 +190,30 @@ export default function Factors() {
         ]} />
       )}
 
-      {tab === 'add' && (
+      {tab === 'eg' && (
+        <Card title={t('egyptFactors')}>
+          <p className="mb-3 text-xs text-slate-400">
+            {t('egyptNote')}
+          </p>
+          <DataTable rows={egRows} pageSize={15} columns={[
+            { key: 'factor_id', label: 'ID', render: (r) => <span className="font-medium">{r.factor_id} <span className="text-slate-400">v{r.version}</span></span> },
+            { key: 'sector', label: t('sector') },
+            { key: 'activity', label: t('activityName') },
+            { key: 'gas', label: t('gas') },
+            { key: 'co2e_factor_value', label: t('factorValue'), render: (r) => `${r.co2e_factor_value} kg/${r.activity_unit}` },
+            { key: 'year_from', label: t('year'), render: (r) => r.year_from === r.year_to ? String(r.year_from) : `${r.year_from}–${r.year_to}` },
+            { key: 'country_scope', label: t('classification'), render: (r) => {
+              const [label, tone] = CLASS_LABEL[r.country_scope] ?? ['—', 'gray']
+              return <Badge tone={tone}>{label}</Badge>
+            } },
+            { key: 'source_organization', label: t('factorSource') },
+            { key: 'source_page', label: t('sourcePage') },
+            { key: 'verification_status', label: t('status'), render: (r) => <StatusBadge status={r.verification_status} /> },
+          ]} />
+        </Card>
+      )}
+
+      {tab === 'add' && isAdmin && (
         <Card title={t('addFactor')}>
           <div className="grid gap-3 md:grid-cols-3">
             <Input label="factor_id" value={form.factor_id} onChange={(v) => setForm({ ...form, factor_id: v })} />
@@ -165,7 +246,7 @@ export default function Factors() {
         </Card>
       )}
 
-      {tab === 'audit' && (
+      {tab === 'audit' && isAdmin && (
         <DataTable rows={audit} pageSize={15} columns={[
           { key: 'log_id', label: '#' }, { key: 'factor_id', label: 'ID' }, { key: 'version', label: 'v' },
           { key: 'action', label: 'Action' }, { key: 'field_name', label: 'Field' },

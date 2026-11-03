@@ -14,6 +14,8 @@ const NAV: { group: DictKey; items: NavItem[] }[] = [
       { to: '/records/new', key: 'navNewRecord', icon: '➕', roles: ['admin', 'head_office', 'factory_manager'] },
       { to: '/records', key: 'navRecords', icon: '📋', roles: ['admin', 'head_office', 'factory_manager', 'viewer'] },
       { to: '/import', key: 'navImport', icon: '📥', roles: ['admin', 'head_office', 'factory_manager'] },
+      { to: '/invoices', key: 'navInvoices', icon: '🧾', roles: ['admin', 'head_office', 'factory_manager'] },
+      { to: '/refrigerants', key: 'navRefrigerants', icon: '❄️', roles: ['admin', 'head_office', 'factory_manager'] },
     ],
   },
   {
@@ -22,6 +24,7 @@ const NAV: { group: DictKey; items: NavItem[] }[] = [
       { to: '/submissions', key: 'navSubmissions', icon: '📨', roles: ['admin', 'head_office', 'factory_manager'] },
       { to: '/consolidated', key: 'navConsolidated', icon: '🏢', roles: ['admin', 'head_office'] },
       { to: '/factors', key: 'navFactors', icon: '📚', roles: ['admin', 'head_office', 'factory_manager', 'viewer'] },
+      { to: '/references', key: 'navReferences', icon: '📜', roles: ['admin', 'head_office', 'factory_manager', 'viewer'] },
       { to: '/reports', key: 'navReports', icon: '🧾', roles: ['admin', 'head_office', 'factory_manager', 'viewer'] },
       { to: '/plans', key: 'navPlans', icon: '🌱', roles: ['admin', 'head_office', 'factory_manager'] },
       { to: '/ml', key: 'navML', icon: '🤖', roles: ['admin', 'head_office', 'factory_manager', 'viewer'] },

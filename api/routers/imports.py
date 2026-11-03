@@ -1,13 +1,27 @@
-"""CSV / Excel import endpoints: preview first (no writes), then explicit commit.
-Factory-scoped users always have rows attributed to their own facility."""
+"""CSV / Excel import endpoints.
+
+Two import paths coexist:
+  * legacy  POST /preview + /commit        - fixed template headers (backward compatible);
+  * smart   POST /analyze -> /preview-mapped -> /commit-mapped - intelligent column mapping
+    (Arabic/English synonyms, fuzzy matching, data-type evidence), with the emission factor
+    that WOULD be applied shown per row before committing.
+
+Duplicate protection: every uploaded file is SHA-256 hashed; a previously committed identical
+file is rejected with 409 and the original batch info unless force=true.
+Factory-scoped users always have rows attributed to their own facility.
+"""
 from __future__ import annotations
 
-import io
+import hashlib
+import json
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from api.deps import Auth, current_user, get_con, require
+from api.util import rows_list
+from services import column_mapper as CM
+from services import factor_library as FL
 from services import importer as I
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
@@ -20,7 +34,18 @@ def _read(name: str, data: bytes) -> pd.DataFrame:
         raise HTTPException(400, str(e))
 
 
-def _preview_json(pv: I.Preview, *, override_facility: str | None = None) -> dict:
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _hash_duplicate(con, file_hash: str):
+    row = con.execute("SELECT batch_id, file_name, imported_at, rows_accepted FROM import_batches "
+                      "WHERE file_hash=? ORDER BY batch_id DESC LIMIT 1", (file_hash,)).fetchone()
+    return None if row is None else dict(row)
+
+
+def _preview_json(pv: I.Preview, *, override_facility: str | None = None,
+                  factor_preview: list | None = None) -> dict:
     return {
         "missing_columns": pv.missing_columns,
         "accepted": [{"row_number": a["row_number"], "activity": a["activity"], "quantity": a["quantity"],
@@ -32,8 +57,123 @@ def _preview_json(pv: I.Preview, *, override_facility: str | None = None) -> dic
         "rejected": [{"row_number": n, "reason": why} for n, why, _raw in pv.rejected],
         "warnings": [{"row_number": n, "text": t} for n, t in pv.warnings],
         "facility_override": override_facility,
+        "factor_preview": factor_preview or [],
     }
 
+
+def _factor_previews(con, accepted: list, limit: int = 60) -> list[dict]:
+    """For each prospective row, what factor WOULD apply (auto-selected only if exactly one
+    verified national factor fits; otherwise the row needs an explicit choice). Cached per key."""
+    cache: dict = {}
+    out = []
+    for a in accepted[:limit]:
+        year = a["date"].year if a["date"] else None
+        key = (a["country"], a["category"], year, a["unit"], a["fuel"])
+        if key not in cache:
+            if a["factor"] is not None:
+                cache[key] = {"status": "from_file", "message": "factor supplied in the file (user-supplied, unverified)"}
+            elif not (a["country"] and a["category"] and year):
+                cache[key] = {"status": "needs_input",
+                              "message": "country/category/date required to look up a factor"}
+            else:
+                try:
+                    sg = FL.suggest(con, country=a["country"], category=a["category"], year=year,
+                                    unit=a["unit"], fuel=a["fuel"])
+                    if sg.chosen is not None:
+                        f = sg.chosen.factor
+                        cache[key] = {"status": "auto", "message": sg.message,
+                                      "chosen": {"factor_id": f.factor_id, "version": f.version,
+                                                 "value": str(f.total_co2e), "unit": f.denominator_unit,
+                                                 "source": f.source_org, "status": f.status.value}}
+                    else:
+                        cache[key] = {"status": "needs_selection", "message": sg.message,
+                                      "candidates": len(sg.candidates)}
+                except Exception as e:  # never fail a preview because of factor lookup
+                    cache[key] = {"status": "error", "message": str(e)}
+        out.append({"row_number": a["row_number"], **cache[key]})
+    return out
+
+
+def _apply_tenancy(con, user: Auth, pv: I.Preview) -> str | None:
+    if not user.is_factory_scoped:
+        return None
+    name = _facility_name(con, user)
+    company = _user_company(con, user)
+    for a in pv.accepted:
+        a["company"], a["facility"] = company, name
+    return name
+
+
+# ---------------- smart mapping ----------------
+
+@router.post("/analyze")
+def analyze_import(file: UploadFile = File(...), con=Depends(get_con),
+                   user: Auth = Depends(require("admin", "head_office", "factory_manager"))):
+    data = file.file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "file too large (max 10 MB)")
+    df = _read(file.filename or "upload.csv", data)
+    info = CM.analyze(df)
+    h = _sha256(data)
+    dup = _hash_duplicate(con, h)
+    return {"file_name": file.filename, "file_hash": h, "duplicate_file": dup, **info}
+
+
+@router.post("/preview-mapped")
+def preview_mapped(file: UploadFile = File(...), mapping: str = Form("{}"),
+                   default_country: str | None = Form(None), default_date: str | None = Form(None),
+                   con=Depends(get_con),
+                   user: Auth = Depends(require("admin", "head_office", "factory_manager"))):
+    try:
+        mp = json.loads(mapping or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "mapping must be valid JSON")
+    data = file.file.read()
+    df = _read(file.filename or "upload.csv", data)
+    renamed, problems = CM.apply_mapping(df, mp)
+    if problems:
+        raise HTTPException(400, "; ".join(problems))
+    pv = I.preview(renamed, default_date=default_date, default_country=default_country)
+    override = _apply_tenancy(con, user, pv)
+    previews = _factor_previews(con, pv.accepted)
+    return _preview_json(pv, override_facility=override, factor_preview=previews)
+
+
+@router.post("/commit-mapped")
+def commit_mapped(file: UploadFile = File(...), mapping: str = Form("{}"),
+                  default_country: str | None = Form(None), default_date: str | None = Form(None),
+                  keep_duplicates: bool = Form(False), force: bool = Form(False),
+                  con=Depends(get_con),
+                  user: Auth = Depends(require("admin", "head_office", "factory_manager"))):
+    try:
+        mp = json.loads(mapping or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "mapping must be valid JSON")
+    data = file.file.read()
+    h = _sha256(data)
+    dup = _hash_duplicate(con, h)
+    if dup and not force:
+        raise HTTPException(409, {"detail": "This exact file was already imported",
+                                  "previous_batch": dup, "force_hint": "send force=true to import anyway"})
+    df = _read(file.filename or "upload.csv", data)
+    renamed, problems = CM.apply_mapping(df, mp)
+    if problems:
+        raise HTTPException(400, "; ".join(problems))
+    pv = I.preview(renamed, default_date=default_date, default_country=default_country)
+    if pv.missing_columns:
+        raise HTTPException(400, f"missing required columns: {', '.join(pv.missing_columns)}")
+    _apply_tenancy(con, user, pv)
+    try:
+        res = I.commit(con, pv, file_name=file.filename or "upload.csv",
+                       keep_duplicates=keep_duplicates, user=user.username)
+    except Exception as e:
+        raise HTTPException(500, f"import failed: {e}")
+    con.execute("UPDATE import_batches SET file_hash=? WHERE batch_id=?", (h, res["batch_id"]))
+    con.commit()
+    return {**res, "file_hash": h}
+
+
+# ---------------- legacy fixed-template path ----------------
 
 @router.post("/preview")
 def preview_import(file: UploadFile = File(...), default_country: str | None = None,
@@ -44,39 +184,39 @@ def preview_import(file: UploadFile = File(...), default_country: str | None = N
         raise HTTPException(413, "file too large (max 10 MB)")
     df = _read(file.filename or "upload.csv", data)
     pv = I.preview(df, default_date=default_date, default_country=default_country)
-    override = None
-    if user.is_factory_scoped:
-        override = _facility_name(con, user)
-        for a in pv.accepted:  # tenancy: rows always belong to the caller's facility
-            a["company"], a["facility"] = _user_company(con, user), override
-    return _preview_json(pv, override_facility=override)
+    override = _apply_tenancy(con, user, pv)
+    return _preview_json(pv, override_facility=override, factor_preview=_factor_previews(con, pv.accepted))
 
 
 @router.post("/commit")
 def commit_import(file: UploadFile = File(...), default_country: str | None = None,
                   default_date: str | None = None, keep_duplicates: bool = False,
+                  force: bool = False,
                   con=Depends(get_con), user: Auth = Depends(require("admin", "head_office", "factory_manager"))):
     data = file.file.read()
+    h = _sha256(data)
+    dup = _hash_duplicate(con, h)
+    if dup and not force:
+        raise HTTPException(409, {"detail": "This exact file was already imported",
+                                  "previous_batch": dup, "force_hint": "send force=true to import anyway"})
     df = _read(file.filename or "upload.csv", data)
     pv = I.preview(df, default_date=default_date, default_country=default_country)
     if pv.missing_columns:
         raise HTTPException(400, f"missing required columns: {', '.join(pv.missing_columns)}")
-    if user.is_factory_scoped:
-        override = _facility_name(con, user)
-        for a in pv.accepted:
-            a["company"], a["facility"] = _user_company(con, user), override
+    _apply_tenancy(con, user, pv)
     try:
         res = I.commit(con, pv, file_name=file.filename or "upload.csv",
                        keep_duplicates=keep_duplicates, user=user.username)
     except Exception as e:
         raise HTTPException(500, f"import failed: {e}")
-    return res
+    con.execute("UPDATE import_batches SET file_hash=? WHERE batch_id=?", (h, res["batch_id"]))
+    con.commit()
+    return {**res, "file_hash": h}
 
 
 @router.get("/batches")
 def batches(con=Depends(get_con), user: Auth = Depends(require("admin", "head_office", "factory_manager"))):
     rows = con.execute("SELECT * FROM import_batches ORDER BY batch_id DESC LIMIT 100").fetchall()
-    from api.util import rows_list
     return rows_list(rows)
 
 

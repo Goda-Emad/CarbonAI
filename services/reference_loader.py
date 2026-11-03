@@ -9,10 +9,11 @@ from schemas.domain import (D, EmissionFactor, FactorClass, GasComponent,
                             ValueBasis, VerificationStatus)
 
 SEED_DIR = Path(__file__).resolve().parent.parent / "database" / "seed"
+FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 
 def load_nz_mfe_2023(path: Path | None = None, *, reviewer: str | None = None):
-    doc = json.loads((path or SEED_DIR / "nz_mfe_2023_factors.json").read_text("utf-8"))
+    doc = json.loads((path or FIXTURES / "nz_mfe_2023_factors.json").read_text("utf-8"))
     src = doc["source"]
     status = VerificationStatus.VERIFIED if reviewer else VerificationStatus.UNVERIFIED
     out = []

@@ -24,6 +24,7 @@ export default function Reports() {
     return p.toString()
   }
   const period = () => `${f.year === 'all' ? 'all' : f.year}${f.month !== 'all' ? `-${String(f.month).padStart(2, '0')}` : ''}`
+  const annualYear = f.year !== 'all' ? f.year : String(new Date().getFullYear())
 
   return (
     <div className="space-y-4">
@@ -48,10 +49,26 @@ export default function Reports() {
         <Button variant="outline" onClick={() => download(`/reports/pdf?${qs()}&lang=en`, `carbonai_report_${period()}_en.pdf`)}>🧾 {t('downloadPdfEn')}</Button>
         <Button variant="outline" onClick={() => download(`/reports/pdf?${qs()}&lang=ar`, `carbonai_report_${period()}_ar.pdf`)}>🧾 {t('downloadPdfAr')}</Button>
       </div>
+      <Card title="Detailed management report (charts embedded)">
+        <p className="mb-3 text-xs text-slate-400">
+          Executive summary, scope shares, charts (scope distribution, monthly trend, facility and annual comparison),
+          top sources, reduction plans + targets, methodology and limitations — inside the PDF itself.
+        </p>
+        <div className="flex flex-wrap gap-3">
+          <Button onClick={() => download(`/reports/pdf-detailed?${qs()}&lang=en`, `carbonai_detailed_${period()}_en.pdf`)}>📘 Detailed PDF (EN)</Button>
+          <Button variant="outline" onClick={() => download(`/reports/pdf-detailed?${qs()}&lang=ar`, `carbonai_detailed_${period()}_ar.pdf`)}>📘 تقرير تفصيلي (AR)</Button>
+          <Button variant="outline" onClick={() => download(`/reports/annual?year=${annualYear}${f.facility !== 'all' ? `&facility_id=${f.facility}` : ''}&lang=en`, `carbonai_annual_${annualYear}_en.pdf`)}>
+            📅 Annual report {annualYear} (EN)
+          </Button>
+          <Button variant="outline" onClick={() => download(`/reports/annual?year=${annualYear}${f.facility !== 'all' ? `&facility_id=${f.facility}` : ''}&lang=ar`, `carbonai_annual_${annualYear}_ar.pdf`)}>
+            📅 التقرير السنوي {annualYear} (AR)
+          </Button>
+        </div>
+      </Card>
       <Card>
         <p className="text-xs leading-5 text-slate-400">
-          التقارير تستخدم نفس فلاتر لوحة التحكم ونفس منطق الحساب (سجلات «محسوبة» فقط؛ السجلات التي تحتاج معاملًا أو تاريخًا أو مراجعة تُذكر ولا تُحسب صفرًا).
-          Reports use the same filters and the same summarize() path as the dashboard: only calculated rows count; rows needing a factor/date/review are listed, never counted as zero.
+          جميع التقارير تستخدم نفس فلاتر لوحة التحكم ونفس منطق الحساب (سجلات «محسوبة» فقط). لا تُدمج الفترات السنوية والشهرية مع الإجمالي التراكمي.
+          All reports use the same filters and the same summarize() path as the dashboard; annual, monthly and lifetime totals are never mixed.
         </p>
       </Card>
     </div>

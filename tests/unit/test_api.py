@@ -287,8 +287,9 @@ class ML(Base):
 
     def test_status_without_model_is_explicit(self):
         st = self.client.get("/api/ml/status", headers=self.admin).json()
-        self.assertFalse(st["loaded"])
-        self.assertIn("reason", st)
+        self.assertFalse(st["row_estimate_model"]["loaded"])
+        self.assertIn("reason", st["row_estimate_model"])
+        self.assertIn("forecast_models", st)
 
     def test_predict_without_model_404(self):
         r = self.client.post("/api/ml/predict", headers=self.admin,
@@ -334,12 +335,14 @@ class ReportsAndImports(Base):
         self.assertEqual(rows["rows"][0]["facility_id"], f["facility_id"])
 
     def test_factor_suggest_endpoint(self):
-        # NZ electricity factors in the seed cover 2022 (the 2023 guide publishes prior-year factors)
+        # fresh installs seed the Egyptian dataset (EEHC 2023/2024, unverified by default)
         sg = self.client.get("/api/factors/suggest", headers=self.admin,
-                             params={"country": "NZ", "category": "electricity", "year": 2022,
+                             params={"country": "EG", "category": "electricity", "year": 2024,
                                      "unit": "kWh"}).json()
         self.assertIn("message", sg)
-        self.assertTrue(sg["candidates"], "expected NZ electricity candidates for 2022")
+        self.assertTrue(sg["candidates"], "expected Egyptian electricity candidates for 2024")
+        ids = [c["factor_id"] for c in sg["candidates"]]
+        self.assertIn("EG-EEHC-THERMAL-INTENSITY-FY2023-24", ids)
         # seed factors are UNVERIFIED by design: nothing auto-chosen until a reviewer verifies
         chosen = sg["chosen"]
         if chosen is not None:

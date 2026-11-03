@@ -70,3 +70,62 @@ def pdf_report(company_id: int | None = None, facility_id: int | None = None, ye
     name = f"carbonai_report_{period}_{'ar' if lang == 'ar' else 'en'}.pdf"
     return Response(content=data, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+# ---- detailed & annual reports (charts embedded in the PDF) ----
+def _facility_totals(df):
+    if df.empty:
+        return []
+    calc = df[df["calc_status"] == "calculated"]
+    out = {}
+    for name, g in calc.groupby("facility_name", dropna=False):
+        out[name or "—"] = float(L._sum(g["kg"]))
+    return sorted(out.items(), key=lambda x: -x[1])
+
+
+@router.get("/pdf-detailed")
+def pdf_detailed_report(company_id: int | None = None, facility_id: int | None = None,
+                        year: int | None = None, month: int | None = None,
+                        date_from: str | None = None, date_to: str | None = None,
+                        scope: str | None = None, lang: str = "en", con=Depends(get_con),
+                        user: Auth = Depends(current_user)):
+    from services.reports_detailed import pdf_detailed
+    df, cid, fid = _dataset(con, user, company_id, facility_id, year, month, date_from, date_to, scope)
+    company, facility = _labels(con, cid, fid)
+    period = R.period_label(year, month, date_from, date_to)
+    plans = [dict(r) for r in con.execute("SELECT * FROM reduction_plans ORDER BY plan_id DESC LIMIT 50").fetchall()]
+    targets = [dict(r) for r in con.execute("SELECT * FROM reduction_targets ORDER BY target_year").fetchall()]
+    try:
+        data = pdf_detailed(df, title_company=company, title_facility=facility, period=period,
+                            lang=lang, plans=plans, targets=targets,
+                            facility_totals=_facility_totals(df), generated_by=user.username)
+    except R.PdfUnavailable as e:
+        raise HTTPException(409, f"PDF not available: {e}")
+    name = f"carbonai_detailed_{period}_{'ar' if lang == 'ar' else 'en'}.pdf"
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/annual")
+def annual_report(year: int, company_id: int | None = None, facility_id: int | None = None,
+                  lang: str = "en", con=Depends(get_con), user: Auth = Depends(current_user)):
+    """Annual report: selected year's data + multi-year comparison chart embedded in the PDF."""
+    from services.reports_detailed import pdf_detailed
+    cid, fid = resolve_scope(user, company_id, facility_id)
+    df = L.fetch_records(con, company_id=cid, facility_id=fid, year=year)
+    company, facility = _labels(con, cid, fid)
+    history = L.fetch_records(con, company_id=cid, facility_id=fid)
+    yearly = sorted((str(y), float(v)) for y, v in L.yearly_totals(history).items())
+    yearly = [(y, v) for y, v in yearly if 2000 <= int(y) <= 2100]
+    plans = [dict(r) for r in con.execute("SELECT * FROM reduction_plans ORDER BY plan_id DESC LIMIT 50").fetchall()]
+    targets = [dict(r) for r in con.execute("SELECT * FROM reduction_targets ORDER BY target_year").fetchall()]
+    try:
+        data = pdf_detailed(df, title_company=company, title_facility=facility,
+                            period=f"Annual {year}", lang=lang, plans=plans, targets=targets,
+                            facility_totals=_facility_totals(df), generated_by=user.username,
+                            yearly=yearly)
+    except R.PdfUnavailable as e:
+        raise HTTPException(409, f"PDF not available: {e}")
+    name = f"carbonai_annual_{year}_{'ar' if lang == 'ar' else 'en'}.pdf"
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})

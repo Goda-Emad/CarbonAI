@@ -6,10 +6,13 @@ import Consolidated from './pages/Consolidated'
 import Dashboard from './pages/Dashboard'
 import Factors from './pages/Factors'
 import ImportPage from './pages/ImportPage'
+import Invoices from './pages/Invoices'
 import Login from './pages/Login'
 import MLPage from './pages/MLPage'
 import Organization from './pages/Organization'
 import Plans from './pages/Plans'
+import References from './pages/References'
+import Refrigerants from './pages/Refrigerants'
 import RecordNew from './pages/RecordNew'
 import Records from './pages/Records'
 import Reports from './pages/Reports'
@@ -39,6 +42,9 @@ export default function App() {
               <Route path="/consolidated" element={<Consolidated />} />
               <Route path="/factors" element={<Factors />} />
               <Route path="/import" element={<ImportPage />} />
+              <Route path="/invoices" element={<Invoices />} />
+              <Route path="/refrigerants" element={<Refrigerants />} />
+              <Route path="/references" element={<References />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/plans" element={<Plans />} />
               <Route path="/organization" element={<Organization />} />

@@ -10,7 +10,7 @@ import pdfplumber
 
 pdf_path = Path(sys.argv[1])
 seed = json.loads((Path(__file__).resolve().parent.parent /
-                   "database/seed/nz_mfe_2023_factors.json").read_text("utf-8"))
+                   "tests/fixtures/nz_mfe_2023_factors.json").read_text("utf-8"))
 bad = 0
 if hashlib.sha256(pdf_path.read_bytes()).hexdigest() != seed["source"]["file_sha256"]:
     print("CHECKSUM MISMATCH: seed was built from a different file"); bad += 1

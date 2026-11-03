@@ -5,7 +5,7 @@ import sqlite3
 
 from db.connection import backup_file, db_path, now_iso, transaction
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 DDL = [
 """CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
@@ -250,6 +250,105 @@ DDL = [
     by TEXT,
     note TEXT)""",
 
+"""CREATE TABLE IF NOT EXISTS invoices (
+    invoice_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER REFERENCES companies(company_id),
+    facility_id INTEGER NOT NULL REFERENCES facilities(facility_id),
+    invoice_name TEXT NOT NULL,
+    invoice_number TEXT,
+    supplier TEXT,
+    invoice_date TEXT,
+    period_year INTEGER,
+    period_month INTEGER,
+    category_key TEXT,
+    quantity TEXT,
+    unit TEXT,
+    amount TEXT,
+    currency TEXT,
+    notes TEXT,
+    record_id INTEGER REFERENCES activity_records(record_id),
+    factor_id TEXT,
+    factor_version INTEGER,
+    factor_value TEXT,
+    factor_source TEXT,
+    file_name TEXT,
+    file_hash TEXT,
+    file_path TEXT,
+    file_mime TEXT,
+    extraction_status TEXT NOT NULL DEFAULT 'none',   -- none|text_extracted|unavailable|reviewed
+    extraction_json TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',             -- draft|calculated|needs_review|void
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT)""",
+
+"""CREATE TABLE IF NOT EXISTS invoice_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(invoice_id),
+    action TEXT NOT NULL,                  -- created|extracted|calculated|voided|duplicate_blocked
+    at TEXT NOT NULL,
+    by TEXT,
+    note TEXT)""",
+
+"""CREATE TABLE IF NOT EXISTS model_registry (
+    model_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    artifact_path TEXT NOT NULL,
+    dataset_fingerprint TEXT NOT NULL,
+    train_date_from TEXT,
+    train_date_to TEXT,
+    n_records INTEGER,
+    features_json TEXT,
+    config_json TEXT,
+    metrics_json TEXT,
+    status TEXT NOT NULL DEFAULT 'staged',            -- staged|active|archived
+    created_at TEXT NOT NULL,
+    created_by TEXT,
+    approved_by TEXT,
+    approved_at TEXT,
+    notes TEXT,
+    UNIQUE(name, version))""",
+
+"""CREATE TABLE IF NOT EXISTS factor_coverage (
+    coverage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    sector TEXT NOT NULL,
+    activity TEXT NOT NULL,
+    gas TEXT NOT NULL DEFAULT 'CO2e',
+    coverage_status TEXT NOT NULL,                    -- available|provisional|estimated|international_default|pending|unavailable|not_applicable
+    available_source TEXT,
+    missing_reason TEXT,
+    review_date TEXT,
+    reviewer TEXT,
+    UNIQUE(country_code, year, sector, activity, gas))""",
+
+"""CREATE TABLE IF NOT EXISTS source_documents (
+    document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reference_id TEXT REFERENCES sources(reference_id),
+    file_name TEXT,
+    file_format TEXT,
+    document_url TEXT,
+    local_file_path TEXT,
+    checksum TEXT,
+    extraction_status TEXT DEFAULT 'not_extracted',
+    review_status TEXT DEFAULT 'unreviewed',
+    created_at TEXT)""",
+
+"""CREATE TABLE IF NOT EXISTS reduction_targets (
+    target_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER REFERENCES companies(company_id),
+    facility_id INTEGER REFERENCES facilities(facility_id),
+    baseline_year INTEGER NOT NULL,
+    baseline_kg_co2e TEXT NOT NULL,
+    target_year INTEGER NOT NULL,
+    target_kg_co2e TEXT NOT NULL,
+    target_reduction_pct REAL,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(company_id, facility_id, target_year))""",
+
 "CREATE INDEX IF NOT EXISTS ix_factor_lookup ON emission_factors(country_code, activity_category, activity, year_from, year_to)",
 "CREATE INDEX IF NOT EXISTS ix_rec_period ON activity_records(activity_year, activity_month)",
 "CREATE INDEX IF NOT EXISTS ix_rec_company ON activity_records(company_id, facility_id)",
@@ -259,11 +358,115 @@ DDL = [
 "CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_active "
 "ON report_submissions(facility_id, period_year, IFNULL(period_month, 0)) "
 "WHERE status IN ('submitted', 'approved')",
+"CREATE INDEX IF NOT EXISTS ix_invoices_search ON invoices(company_id, facility_id, period_year, period_month)",
+"CREATE UNIQUE INDEX IF NOT EXISTS ux_invoice_hash ON invoices(facility_id, file_hash) WHERE file_hash IS NOT NULL",
+"CREATE INDEX IF NOT EXISTS ix_invoice_number ON invoices(facility_id, supplier, invoice_number, invoice_date)",
+"""CREATE TABLE IF NOT EXISTS reference_library (
+    ref_key TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    organization TEXT NOT NULL,
+    edition TEXT,
+    publication_year INTEGER,
+    url TEXT,
+    kind TEXT NOT NULL,                 -- standard|methodology|factor_database|gwp|national_inventory
+    country_applicability TEXT,         -- GLOBAL | EG | other ISO2
+    sectors TEXT,
+    methodology_support TEXT,
+    chapter_section TEXT,
+    access_date TEXT,
+    notes TEXT,
+    verification_status TEXT NOT NULL DEFAULT 'unverified')""",
+
+"""CREATE TABLE IF NOT EXISTS refrigerants (
+    refrigerant_key TEXT PRIMARY KEY,
+    designation TEXT NOT NULL,
+    chemical_name TEXT,
+    formula TEXT,
+    family TEXT NOT NULL,               -- HFC | HFC blend | HCFC | HFO | natural
+    components_json TEXT,               -- [["R-32", 0.5], ["R-125", 0.5]] mass fractions
+    gwp_100_ar4 TEXT,
+    gwp_100_ar5 TEXT,
+    gwp_100_ar6 TEXT,
+    gwp_20_ar5 TEXT,
+    gwp_500_ar5 TEXT,
+    basis_notes TEXT,
+    source_ref TEXT,
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    is_active INTEGER NOT NULL DEFAULT 1)""",
+
+"""CREATE TABLE IF NOT EXISTS cooling_equipment (
+    equipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    facility_id INTEGER NOT NULL REFERENCES facilities(facility_id),
+    company_id INTEGER REFERENCES companies(company_id),
+    identifier TEXT NOT NULL,
+    equipment_type TEXT,
+    refrigerant_key TEXT,
+    charge_kg TEXT,
+    installed_year INTEGER,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(facility_id, identifier))""",
+
+"""CREATE TABLE IF NOT EXISTS refrigerant_service_records (
+    service_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipment_id INTEGER NOT NULL REFERENCES cooling_equipment(equipment_id),
+    facility_id INTEGER NOT NULL,
+    service_date TEXT NOT NULL,
+    refrigerant_key TEXT NOT NULL,
+    added_kg TEXT, recovered_kg TEXT, leaked_kg TEXT,
+    gwp_basis TEXT NOT NULL,
+    gwp_value TEXT,
+    leaked_calculated_kg TEXT,
+    kg_co2e TEXT, t_co2e TEXT,
+    record_id INTEGER REFERENCES activity_records(record_id),
+    methodology TEXT,
+    evidence_ref TEXT,
+    notes TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL)""",
+
+"CREATE INDEX IF NOT EXISTS ix_service_facility ON refrigerant_service_records(facility_id, service_date)",
+"CREATE INDEX IF NOT EXISTS ix_equipment_facility ON cooling_equipment(facility_id, identifier)",
+"CREATE INDEX IF NOT EXISTS ix_refs_kind ON reference_library(kind, country_applicability)",
+]
+
+# ---- additive column migrations (applied only when the column is missing) ----
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("emission_factors", "sector", "TEXT"),
+    ("emission_factors", "fuel_type", "TEXT"),
+    ("emission_factors", "technology", "TEXT"),
+    ("emission_factors", "gas", "TEXT"),
+    ("emission_factors", "country_scope", "TEXT"),
+    ("emission_factors", "quality_level", "TEXT"),
+    ("emission_factors", "uncertainty", "TEXT"),
+    ("emission_factors", "data_year", "INTEGER"),
+    ("emission_factors", "source_page", "TEXT"),
+    ("emission_factors", "source_table", "TEXT"),
+    ("import_batches", "file_hash", "TEXT"),
+    ("import_batches", "status", "TEXT NOT NULL DEFAULT 'committed'"),
+    ("reduction_plans", "target_scope", "TEXT"),
+    ("reduction_plans", "target_facility_id", "INTEGER REFERENCES facilities(facility_id)"),
+    ("reduction_plans", "activity", "TEXT"),
+    ("reduction_plans", "baseline_kg", "TEXT"),
+    ("reduction_plans", "expected_reduction_pct", "REAL"),
+    ("reduction_plans", "kpi", "TEXT"),
+    ("reduction_plans", "priority", "TEXT"),
+    ("reduction_plans", "reference_source", "TEXT"),
+    ("reduction_plans", "plan_year", "INTEGER"),
+    ("activity_records", "invoice_id", "INTEGER"),
 ]
 
 
 def init_db(con: sqlite3.Connection, *, backup: bool = True) -> None:
-    """Create/upgrade tables idempotently. Existing rows are never touched."""
+    """Create/upgrade tables idempotently. Existing rows are never touched.
+
+    Migration strategy (documented, reversible):
+    * all tables/columns are additive; no DROP/DELETE ever runs here;
+    * `MIGRATIONS` adds a column only when PRAGMA table_info shows it is missing;
+    * a version bump triggers an automatic file backup before any change;
+    * rollback for a column addition = ignore the column (SQLite keeps the data intact);
+      restoring the pre-migration backup file is the documented hard rollback.
+    """
     p = db_path()
     existing = p.exists() and p.stat().st_size > 0
     if backup and existing:
@@ -277,5 +480,10 @@ def init_db(con: sqlite3.Connection, *, backup: bool = True) -> None:
     with transaction(con):
         for stmt in DDL:
             con.execute(stmt)
+        for table, column, ddl in MIGRATIONS:
+            cols = {r["name"] for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column not in cols:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         con.execute("INSERT OR IGNORE INTO schema_meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+        con.execute("UPDATE schema_meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
         con.execute("INSERT OR IGNORE INTO schema_meta VALUES ('created_at', ?)", (now_iso(),))

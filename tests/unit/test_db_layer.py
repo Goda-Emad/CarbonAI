@@ -27,7 +27,7 @@ class Base(unittest.TestCase):
         os.environ["CARBONAI_DB_PATH"] = str(Path(self.tmp.name) / "data" / "t.db")
         self.con = dbc.connect()
         init_db(self.con)
-        seed_all(self.con)
+        seed_all(self.con, include_legacy_nz=True)
 
     def tearDown(self):
         self.con.close()
@@ -57,7 +57,7 @@ class Storage(Base):
         L.add_record(self.con, activity_name="keep me", quantity="10", unit="kWh", country_code="NZ",
                      activity_date="2022-01-01", category_key="electricity", factor=f)
         for _ in range(3):
-            init_db(self.con); seed_all(self.con)
+            init_db(self.con); seed_all(self.con, include_legacy_nz=True)
         self.assertEqual(len(L.fetch_records(self.con)), 1)
         self.assertEqual(self.con.execute("SELECT COUNT(*) FROM emission_factors").fetchone()[0], 37)
 
